@@ -26,101 +26,137 @@ app = Flask(__name__)
 sockets = Sockets(app)
 app.debug = True
 
+class Client:
+  def __init__(self):
+    self.queue = queue.Queue()
+  def put(self, v):
+    self.queue.put_nowait(v)
+  def get(self):
+    return self.queue.get()
+# class Client
+
+clients = list()
+
 class World:
-    def __init__(self):
-        self.clear()
-        # we've got listeners now!
-        self.listeners = list()
-        
-    def add_set_listener(self, listener):
-        self.listeners.append( listener )
-
-    def update(self, entity, key, value):
-        entry = self.space.get(entity,dict())
-        entry[key] = value
-        self.space[entity] = entry
-        self.update_listeners( entity )
-
-    def set(self, entity, data):
-        self.space[entity] = data
-        self.update_listeners( entity )
-
-    def update_listeners(self, entity):
-        '''update the set listeners'''
-        for listener in self.listeners:
-            listener(entity, self.get(entity))
-
-    def clear(self):
-        self.space = dict()
-
-    def get(self, entity):
-        return self.space.get(entity,dict())
+  def __init__(self):
+    self.clear()
+    # we've got listeners now!
+    self.listeners = list()
     
-    def world(self):
-        return self.space
+  def add_set_listener(self, listener):
+    self.listeners.append( listener )
 
-myWorld = World()        
+  def update(self, entity, key, value):
+    entry = self.space.get(entity,dict())
+    entry[key] = value
+    self.space[entity] = entry
+    self.update_listeners( entity )
 
-def set_listener( entity, data ):
-    ''' do something with the update ! '''
+  def set(self, entity, data):
+    self.space[entity] = data
+    self.update_listeners( entity )
+
+  def update_listeners(self, entity):
+    '''update the set listeners'''
+    for listener in self.listeners:
+      listener(entity, self.get(entity))
+
+  def clear(self):
+    self.space = dict()
+
+  def get(self, entity):
+    return self.space.get(entity,dict())
+  
+  def world(self):
+    return self.space
+# class World
+
+myWorld = World()
+
+def set_listener(entity, data):
+  ''' do something with the update ! '''
+  msg = json.dumps({entity: data})
+  for c in clients:
+    c.put(msg)
+# def set_listener(entity, data)
 
 myWorld.add_set_listener( set_listener )
-        
+    
 @app.route('/')
 def hello():
-    '''Return something coherent here.. perhaps redirect to /static/index.html '''
-    return None
+  return flask.redirect("/static/index.html")
 
-def read_ws(ws,client):
-    '''A greenlet function that reads from the websocket and updates the world'''
-    # XXX: TODO IMPLEMENT ME
-    return None
+def read_ws(ws, client):
+  '''A greenlet function that reads from the websocket and updates the world'''
+  while True:
+    data = ws.receive()
+    if data != None:
+      msg = json.loads(data)
+      for key in msg:
+        myWorld.set(key, msg[key])
+    else:
+      break
+    # if data != None
+# def read_ws(ws, client)
 
 @sockets.route('/subscribe')
 def subscribe_socket(ws):
-    '''Fufill the websocket URL of /subscribe, every update notify the
-       websocket and read updates from the websocket '''
-    # XXX: TODO IMPLEMENT ME
-    return None
-
+  '''Fufill the websocket URL of /subscribe, every update notify the
+     websocket and read updates from the websocket '''
+  client = Client()
+  clients.append(client)
+  g = gevent.spawn( read_ws, ws, client )
+  try:
+    while True:
+      ws.send(client.get())
+  except Exception as e:
+    print "WS Error %s" % e
+  finally:
+    clients.remove(client)
+    gevent.kill(g)
+# def subscribe_socket(ws)
 
 def flask_post_json():
-    '''Ah the joys of frameworks! They do so much work for you
-       that they get in the way of sane operation!'''
-    if (request.json != None):
-        return request.json
-    elif (request.data != None and request.data != ''):
-        return json.loads(request.data)
-    else:
-        return json.loads(request.form.keys()[0])
+  '''Ah the joys of frameworks! They do so much work for you
+     that they get in the way of sane operation!'''
+  if (request.json != None):
+    return request.json
+  elif (request.data != None and request.data != ''):
+    return json.loads(request.data)
+  else:
+    return json.loads(request.form.keys()[0])
 
 @app.route("/entity/<entity>", methods=['POST','PUT'])
 def update(entity):
-    '''update the entities via this interface'''
-    return None
+  '''update the entities via this interface'''
+  data = flask_post_json()
+  myWorld.set(entity, data)
+  return json.dumps(data)
+# def update(entity)
 
-@app.route("/world", methods=['POST','GET'])    
+@app.route("/world", methods=['POST','GET'])  
 def world():
-    '''you should probably return the world here'''
-    return None
+  '''you should probably return the world here'''
+  return json.dumps(myWorld.world())
+# def world()
 
-@app.route("/entity/<entity>")    
+@app.route("/entity/<entity>")  
 def get_entity(entity):
-    '''This is the GET version of the entity interface, return a representation of the entity'''
-    return None
-
+  '''This is the GET version of the entity interface, return a representation of the entity'''
+  return json.dumps(myWorld.get(entity))
+# def get_entity(entity)
 
 @app.route("/clear", methods=['POST','GET'])
 def clear():
-    '''Clear the world out!'''
-    return None
-
-
+  '''Clear the world out!'''
+  myWorld.clear()
+  return json.dumps(myWorld.world())
+# def clear()
 
 if __name__ == "__main__":
-    ''' This doesn't work well anymore:
-        pip install gunicorn
-        and run
-        gunicorn -k flask_sockets.worker sockets:app
-    '''
-    app.run()
+  ''' This doesn't work well anymore:
+    pip install gunicorn
+    and run
+    gunicorn -k flask_sockets.worker sockets:app
+  '''
+  app.run()
